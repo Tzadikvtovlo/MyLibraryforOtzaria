@@ -67,7 +67,7 @@ LABELS = {'תנ"ך: פרק לפי כותרת ברמה 2': 'כותרת ברמה 2
 def base_profiles(target, db):
     """פרופילים אפשריים לפי מבנה ספר היעד."""
     if db.dafset(target):
-        return [('דפים', {'target': target, 'link_type': 'פירוש', 'validate': True,
+        return [('דפים', {'target': target, 'link_type': 'פירוש', 'validate': True, 'reset_on_unmatched': True,
                           'rules': [{'type': 'daf', 'levels': [2, 6], 'formats': ['std', 'ext']}]})]
     out = []
     for name, p in C.PRESETS.items():
@@ -75,9 +75,11 @@ def base_profiles(target, db):
             continue
         q = copy.deepcopy(p)
         q['target'] = target
+        q['reset_on_unmatched'] = True
         out.append((LABELS.get(name, name), q))
     q = copy.deepcopy(C.PRESETS['פרק ברמה 2 והלכה או סימן ברמה 3'])
     q['target'] = target
+    q['reset_on_unmatched'] = True
     out.append(('פרק והלכה', q))
     return out
 

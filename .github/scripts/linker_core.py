@@ -494,6 +494,9 @@ def run_profile(lines, profile, db, stem=''):
                     break
             if not matched and lvl >= 2:
                 unmatched[text[:40]] += 1
+                # זיהוי אוטומטי: כותרת לא מזוהה ברמה של הכללים מנתקת את המיקום, כדי שלא יידבקו אליו שורות שלא שייכות
+                if profile.get('reset_on_unmatched') and any(_levels(r)[0] <= lvl <= _levels(r)[1] for r in rules if r.get('type') != 'anchor'):
+                    state['cur'] = None
             continue
         if i == 1 or not s:
             continue
