@@ -123,15 +123,19 @@ jobs:
           set -euo pipefail
           command -v zstd >/dev/null || sudo apt-get install -y zstd
           mkdir -p "$RUNNER_TEMP/prev"
+          # מספר הגרסה = הגרסה הקודמת + 1 (או 1 אם אין גרסה קודמת). כך המספר לא תלוי במספר הריצות בגיטהאב.
+          VERSION=1
           if gh release download latest -p "${REPO}.db" -D "$RUNNER_TEMP/prev" --clobber 2>/dev/null; then
-            OK=$(python -X utf8 -c 'import sqlite3,sys; m=dict(sqlite3.connect(sys.argv[1]).execute("select key,value from schema_meta").fetchall()); print("yes" if m.get("library_id")==sys.argv[2] and int(m.get("db_version","0"))<int(sys.argv[3]) else "no")' "$RUNNER_TEMP/prev/${REPO}.db" "$OWNER-$REPO" "$GITHUB_RUN_NUMBER" 2>/dev/null || echo no)
-            if [ "$OK" = "yes" ]; then
+            PREV_V=$(python -X utf8 -c 'import sqlite3,sys; m=dict(sqlite3.connect(sys.argv[1]).execute("select key,value from schema_meta").fetchall()); print(int(m["db_version"]) if m.get("library_id")==sys.argv[2] else "")' "$RUNNER_TEMP/prev/${REPO}.db" "$OWNER-$REPO" 2>/dev/null || true)
+            if [ -n "$PREV_V" ]; then
+              VERSION=$((PREV_V + 1))
               echo "path=$RUNNER_TEMP/prev/${REPO}.db" >> "$GITHUB_OUTPUT"
-              echo "נמצאה גרסה קודמת: ייווצר גם קובץ עדכון קטן"
-              exit 0
+              echo "נמצאה גרסה קודמת ($PREV_V): ייווצר גם קובץ עדכון קטן"
             fi
           fi
-          echo "אין גרסה קודמת תקינה: ייווצר DB מלא בלבד"
+          [ -n "${PREV_V:-}" ] || echo "אין גרסה קודמת תקינה: ייווצר DB מלא בלבד"
+          echo "DB_VERSION=$VERSION" >> "$GITHUB_ENV"
+          echo "גרסת ה-DB: $VERSION"
 
       - name: Build DB
         if: steps.need-official.outputs.needed == 'true'
@@ -147,7 +151,7 @@ jobs:
           [ -f "$RUNNER_TEMP/official/seforim.db" ] && OFFICIAL=(--official "$RUNNER_TEMP/official/seforim.db")
           STABLE=()
           [ -n "${PREV_DB:-}" ] && STABLE=(--stable-from "$PREV_DB")
-          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}" "${STABLE[@]}"             --out "$RUNNER_TEMP/work/raw.db"             --library-id "$OWNER-$REPO"             --source-name "$REPO"             --author "$OWNER"             --db-version "${GITHUB_RUN_NUMBER}"             --display-name "הספרייה של $OWNER"
+          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}" "${STABLE[@]}"             --out "$RUNNER_TEMP/work/raw.db"             --library-id "$OWNER-$REPO"             --source-name "$REPO"             --author "$OWNER"             --db-version "$DB_VERSION"             --display-name "הספרייה של $OWNER"
           python -X utf8 .github/scripts/compress_personal_db.py             "$RUNNER_TEMP/work/raw.db" "$RUNNER_TEMP/work/${REPO}.db"
           ls -l "$RUNNER_TEMP/work"
 
@@ -184,8 +188,8 @@ jobs:
           BASE="https://github.com/$GITHUB_REPOSITORY/releases/download"
           DELTA=()
           [ -n "${PREV_DB:-}" ] && DELTA=(--prev-dbs "$PREV_DB")
-          python -X utf8 .github/scripts/release_db.py inject --db "$W/${REPO}.db"             --library-id "$OWNER-$REPO" --db-version "$GITHUB_RUN_NUMBER"             --manifest-url "$BASE/db/manifest.json" --key "$RUNNER_TEMP/signing.key"
-          python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$GITHUB_RUN_NUMBER"             --notes "עדכון אוטומטי, גרסה $GITHUB_RUN_NUMBER" "${DELTA[@]}"
+          python -X utf8 .github/scripts/release_db.py inject --db "$W/${REPO}.db"             --library-id "$OWNER-$REPO" --db-version "$DB_VERSION"             --manifest-url "$BASE/db/manifest.json" --key "$RUNNER_TEMP/signing.key"
+          python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$DB_VERSION"             --notes "עדכון אוטומטי, גרסה $DB_VERSION" "${DELTA[@]}"
           python -X utf8 .github/scripts/release_db.py sign "$W/out/manifest.json" --key "$RUNNER_TEMP/signing.key"
           PUB=$(python -X utf8 -c 'import sys; sys.path.insert(0, ".github/scripts"); import release_db; print(release_db.public_key_of(sys.argv[1]))' "$RUNNER_TEMP/signing.key")
           python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db" "${DELTA[@]}"
@@ -199,7 +203,7 @@ jobs:
         run: |
           set -euo pipefail
           W="$RUNNER_TEMP/work"
-          V="$GITHUB_RUN_NUMBER"
+          V="$DB_VERSION"
           NOW="$(date -u +'%Y-%m-%d %H:%M') UTC"
 
           # 1. קבצי הגרסה (לעדכון אוטומטי)
