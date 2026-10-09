@@ -1,0 +1,48 @@
+name: Extract ZIP and Keep Empty Folders
+
+# התהליך ירוץ כשהקובץ הספציפי יעודכן, או כשתריץ ידנית
+on:
+  push:
+    paths:
+      - 'A.zip' # <--- שנה לשם קובץ הזיפ שלך כאן
+  workflow_dispatch:
+
+# אישור לבוט לכתוב ולדחוף שינויים חזרה למאגר
+permissions:
+  contents: write
+
+jobs:
+  extract-and-commit:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract ZIP file
+        run: |
+          # מחלץ את הקובץ. המירכאות מונעות שגיאות אם יש רווחים בשם
+          unzip -o "A.zip" -d ./ # <--- שנה לשם קובץ הזיפ שלך כאן
+          
+          # מוחק את קובץ הזיפ המקורי כדי שלא יתפוס מקום מיותר במאגר
+          rm "A.zip" # <--- שנה לשם קובץ הזיפ שלך כאן
+
+      - name: Handle empty folders and push changes
+        run: |
+          # הגדרת בוט גיטהאב בתור מי שעושה את הקומיט
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
+          
+          # סריקת כל התיקיות הריקות (חוץ מתיקיות המערכת של גיט) ויצירת קובץ נסתר בהן
+          find . -type d -empty -not -path "./.git*" -exec touch {}/.gitkeep \;
+          
+          # הוספת כל הקבצים והתיקיות המחולצים (וכן הסרת הזיפ מהמעקב)
+          git add .
+          
+          # בדיקה אם יש שינויים, ואם כן - עשה Commit ו-Push
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Auto-extract ZIP, keep empty directories, and remove ZIP file"
+            git push
+          fi
