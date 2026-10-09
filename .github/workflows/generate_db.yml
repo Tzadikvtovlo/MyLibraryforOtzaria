@@ -45,7 +45,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install zstandard
+        run: pip install zstandard pynacl
 
       # ה-DB הרשמי של אוצריא נדרש ליצירת קישורים: הוא מתרגם "ספר + פרק/דף" לשורה המדויקת בספרייה הרשמית.
       # מורידים אותו בזמן הריצה (נשמר ב-cache לפי גרסה) כשיש במאגר ספרי TXT.
@@ -119,29 +119,80 @@ jobs:
           # קבצי TXT בלבד מתוך תיקיות; README וקבצי GS (וכל קובץ שאינו TXT) לא נכללים
           OFFICIAL=()
           [ -f "$RUNNER_TEMP/official/seforim.db" ] && OFFICIAL=(--official "$RUNNER_TEMP/official/seforim.db")
-          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}" \
-            --out "$RUNNER_TEMP/work/raw.db" \
-            --library-id "$OWNER-$REPO" \
-            --source-name "$REPO" \
-            --author "$OWNER" \
-            --db-version "${GITHUB_RUN_NUMBER}" \
-            --display-name "הספרייה של $OWNER"
-          python -X utf8 .github/scripts/compress_personal_db.py \
-            "$RUNNER_TEMP/work/raw.db" "$RUNNER_TEMP/work/${REPO}.db"
+          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}"             --out "$RUNNER_TEMP/work/raw.db"             --library-id "$OWNER-$REPO"             --source-name "$REPO"             --author "$OWNER"             --db-version "${GITHUB_RUN_NUMBER}"             --display-name "הספרייה של $OWNER"
+          python -X utf8 .github/scripts/compress_personal_db.py             "$RUNNER_TEMP/work/raw.db" "$RUNNER_TEMP/work/${REPO}.db"
           ls -l "$RUNNER_TEMP/work"
 
-      - name: Publish to the fixed 'latest' release
+      # עדכונים אוטומטיים באוצריא: חותמים על מניפסט עדכון, והכתובת שלו נשמרת בתוך ה-DB עצמו.
+      # מפתח החתימה נוצר פעם אחת ונשמר ב-release בשם db-key (או מגיע מסוד DB_SIGNING_KEY אם הגדרתם).
+      # אסור למחוק את ה-release הזה: החלפת מפתח מחייבת כל משתמש לצרף את ה-DB מחדש.
+      - name: Prepare signing key
+        if: steps.need-official.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SIGNING_SECRET: ${{ secrets.DB_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/signing.key"
+          if [ -n "${SIGNING_SECRET:-}" ]; then
+            echo "$SIGNING_SECRET" > "$KEY"
+          elif gh release view db-key >/dev/null 2>&1; then
+            gh release download db-key -p signing.key -D "$RUNNER_TEMP" --clobber
+          else
+            python -X utf8 .github/scripts/release_db.py keygen --out "$KEY"
+            gh release create db-key --target "$GITHUB_SHA" --latest=false               --title "מפתח חתימה לעדכונים (אין למחוק)"               --notes "מפתח החתימה של עדכוני ה-DB. אין למחוק release זה, אחרת עדכונים אוטומטיים באוצריא יפסיקו לעבוד."
+            gh release upload db-key "$KEY" --clobber
+          fi
+
+      - name: Add update info and pack
+        if: steps.need-official.outputs.needed == 'true'
+        env:
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          W="$RUNNER_TEMP/work"
+          BASE="https://github.com/$GITHUB_REPOSITORY/releases/download"
+          python -X utf8 .github/scripts/release_db.py inject --db "$W/${REPO}.db"             --library-id "$OWNER-$REPO" --db-version "$GITHUB_RUN_NUMBER"             --manifest-url "$BASE/db/manifest.json" --key "$RUNNER_TEMP/signing.key"
+          python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$GITHUB_RUN_NUMBER"             --notes "עדכון אוטומטי, גרסה $GITHUB_RUN_NUMBER"
+          python -X utf8 .github/scripts/release_db.py sign "$W/out/manifest.json" --key "$RUNNER_TEMP/signing.key"
+          PUB=$(python -X utf8 -c 'import sys; sys.path.insert(0, ".github/scripts"); import release_db; print(release_db.public_key_of(sys.argv[1]))' "$RUNNER_TEMP/signing.key")
+          python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db"
+          ls -l "$W/out"
+
+      - name: Publish releases
         if: steps.need-official.outputs.needed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.event.repository.name }}
         run: |
           set -euo pipefail
-          FILE="$RUNNER_TEMP/work/${REPO}.db"
-          NOTES="ה-DB נבנה אוטומטית מהספרים שבמאגר. עודכן לאחרונה: $(date -u +'%Y-%m-%d %H:%M') UTC (ריצה ${GITHUB_RUN_NUMBER})"
+          W="$RUNNER_TEMP/work"
+          V="$GITHUB_RUN_NUMBER"
+          NOW="$(date -u +'%Y-%m-%d %H:%M') UTC"
+
+          # 1. קבצי הגרסה (לעדכון אוטומטי)
+          gh release delete "db-v$V" --yes --cleanup-tag >/dev/null 2>&1 || true
+          gh release create "db-v$V" --target "$GITHUB_SHA" --latest=false             --title "גרסה $V (קבצי עדכון)" --notes "קבצים לעדכון אוטומטי של אוצריא. אין צורך להוריד מכאן."
+          gh release upload "db-v$V" "$W"/out/* --clobber
+
+          # 2. המניפסט הקבוע: אוצריא בודקת אותו כדי לדעת שיש גרסה חדשה (רק אחרי שהקבצים עלו)
+          if ! gh release view db >/dev/null 2>&1; then
+            gh release create db --target "$GITHUB_SHA" --latest=false               --title "מניפסט עדכון" --notes "אין צורך להוריד מכאן."
+          fi
+          gh release upload db "$W/out/manifest.json" "$W/out/manifest.json.sig" --clobber
+          gh release edit db --notes "גרסה נוכחית: $V" --latest=false
+
+          # 3. ההורדה הרגילה: release קבוע בשם latest, עם קובץ ה-DB
+          NOTES="ה-DB נבנה אוטומטית מהספרים שבמאגר. עודכן לאחרונה: $NOW (גרסה $V)"
           if gh release view latest >/dev/null 2>&1; then
             gh release edit latest --title "ה-DB העדכני" --notes "$NOTES" --latest
           else
             gh release create latest --title "ה-DB העדכני" --notes "$NOTES" --latest --target "$GITHUB_SHA"
           fi
-          gh release upload latest "$FILE" --clobber
+          gh release upload latest "$W/${REPO}.db" --clobber
+
+          # 4. ניקוי: משאירים 3 גרסאות אחרונות של קבצי עדכון
+          gh release list --limit 100 --json tagName --jq '.[].tagName' | grep -E '^db-v[0-9]+$' | sort -t v -k2 -n -r | tail -n +4 | while read -r t; do
+            gh release delete "$t" --yes --cleanup-tag || true
+          done
