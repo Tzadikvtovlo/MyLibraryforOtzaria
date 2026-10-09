@@ -61,6 +61,9 @@ def find_target(stem, index):
     return None
 
 
+LABELS = {'תנ"ך: פרק לפי כותרת ברמה 2': 'כותרת ברמה 2 כמיקום'}
+
+
 def base_profiles(target, db):
     """פרופילים אפשריים לפי מבנה ספר היעד."""
     if db.dafset(target):
@@ -72,7 +75,7 @@ def base_profiles(target, db):
             continue
         q = copy.deepcopy(p)
         q['target'] = target
-        out.append((name, q))
+        out.append((LABELS.get(name, name), q))
     q = copy.deepcopy(C.PRESETS['פרק ברמה 2 והלכה או סימן ברמה 3'])
     q['target'] = target
     out.append(('פרק והלכה', q))
