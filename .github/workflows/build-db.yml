@@ -3,53 +3,39 @@ name: Build and Release DB
 on:
   push:
     branches:
-      - main # האקשן ירוץ אוטומטית בכל דחיפה לענף הראשי
-  workflow_dispatch: # מאפשר להריץ את האקשן גם ידנית מתוך לשונית ה-Actions
+      - main
+  workflow_dispatch:
 
 jobs:
-  build-release:
+  build-and-release:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # הרשאה הכרחית כדי ליצור שחרור (Release) ולהעלות אליו קבצים
+      contents: write
 
     steps:
-      - name: Checkout repository
+      - name: Checkout Code
         uses: actions/checkout@v4
 
-      - name: Apply Exclusions (Remove ignored files)
+      - name: Clean unwanted files
         run: |
-          echo "Removing .github directory and all its contents..."
-          find . -type d -name ".github" -exec rm -rf {} +
+          # מחיקת תיקיית הגיטהאב על כל תכולתה
+          rm -rf .github
           
-          echo "Removing specific file A.GS..."
-          find . -type f -name "A.GS" -delete
-          
-          echo "Removing all files with .gs or .GS extension..."
-          # פקודת iname מוודאת התעלמות מאותיות גדולות/קטנות, כך שהיא תתפוס גם .gs וגם .GS
+          # מחיקת כל קובץ בעל סיומת GS (גדולות או קטנות, כולל A.GS)
           find . -type f -iname "*.gs" -delete
 
-      - name: Create DB
+      - name: Create the DB archive
         run: |
-          # כאן נכנסת פקודת בניית ה-DB שלך. 
-          # מאחר שהחרגנו את הקבצים בשלב הקודם, הלוגיקה המקורית תרוץ על סביבה נקייה.
-          
-          # אם יצירת ה-DB היא למעשה אריזת המאגר לקובץ (בדומה לאוצריא):
-          zip -r database.zip .
-          
-          # הערה: אם יש לך סקריפט פייתון או כלי ייעודי שבונה את ה-DB (למשל db.sqlite), 
-          # פשוט החלף את פקודת ה-zip בפקודת ההרצה שלך, למשל:
-          # python build_db.py
+          # אריזת כל מה שנשאר במאגר לקובץ אחד
+          zip -r DB.zip .
 
-      - name: Generate Dynamic Release Tag
-        id: tag
-        run: echo "release_tag=v$(date +'%Y.%m.%d-%H%M%S')" >> $GITHUB_ENV
+      - name: Set Release Tag
+        run: echo "TAG_NAME=v$(date +'%Y.%m.%d-%H%M%S')" >> $GITHUB_ENV
 
-      - name: Publish Release & Upload DB to Downloads
+      - name: Upload to Downloads
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.release_tag }}
-          name: "Database Update ${{ env.release_tag }}"
-          # החלף את שם הקובץ 'database.zip' לשם קובץ ה-DB האמיתי שהסקריפט שלך פולט:
-          files: database.zip 
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ env.TAG_NAME }}
+          name: "DB Update ${{ env.TAG_NAME }}"
+          # העלאת הקובץ שנוצר ללשונית ההורדות (Releases)
+          files: DB.zip
