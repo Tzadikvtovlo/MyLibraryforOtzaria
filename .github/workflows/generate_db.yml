@@ -57,6 +57,8 @@ jobs:
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=אין ספרים::לא נמצאו ספרי TXT בתיקיות, ולכן לא נוצר DB. מעלים ספרים והבנייה תרוץ שוב אוטומטית."
+            echo "### לא נוצר DB: אין ספרים" >> "$GITHUB_STEP_SUMMARY"
+            echo "לא נמצא אף קובץ TXT בתוך התיקיות. מעלו לפחות ספר אחד לתיקייה, והבנייה תרוץ שוב אוטומטית." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Find latest official DB release
@@ -108,9 +110,33 @@ jobs:
         if: steps.need-official.outputs.needed == 'true'
         run: python -X utf8 .github/scripts/auto_links.py . "$RUNNER_TEMP/official/seforim.db"
 
+      # הגרסה הקודמת של ה-DB (מה-release latest): משמשת לשמירת מזהים יציבים בין בניות ולייצור קובץ עדכון קטן (דלתא).
+      # בבנייה הראשונה, או אם הקובץ הקודם לא תקין, מדלגים: נבנה DB מלא בלבד.
+      - name: Fetch previous DB (for small update files)
+        id: prev
+        if: steps.need-official.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OWNER: ${{ github.repository_owner }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          mkdir -p "$RUNNER_TEMP/prev"
+          if gh release download latest -p "${REPO}.db" -D "$RUNNER_TEMP/prev" --clobber 2>/dev/null; then
+            OK=$(python -X utf8 -c 'import sqlite3,sys; m=dict(sqlite3.connect(sys.argv[1]).execute("select key,value from schema_meta").fetchall()); print("yes" if m.get("library_id")==sys.argv[2] and int(m.get("db_version","0"))<int(sys.argv[3]) else "no")' "$RUNNER_TEMP/prev/${REPO}.db" "$OWNER-$REPO" "$GITHUB_RUN_NUMBER" 2>/dev/null || echo no)
+            if [ "$OK" = "yes" ]; then
+              echo "path=$RUNNER_TEMP/prev/${REPO}.db" >> "$GITHUB_OUTPUT"
+              echo "נמצאה גרסה קודמת: ייווצר גם קובץ עדכון קטן"
+              exit 0
+            fi
+          fi
+          echo "אין גרסה קודמת תקינה: ייווצר DB מלא בלבד"
+
       - name: Build DB
         if: steps.need-official.outputs.needed == 'true'
         env:
+          PREV_DB: ${{ steps.prev.outputs.path }}
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
         run: |
@@ -119,7 +145,9 @@ jobs:
           # קבצי TXT בלבד מתוך תיקיות; README וקבצי GS (וכל קובץ שאינו TXT) לא נכללים
           OFFICIAL=()
           [ -f "$RUNNER_TEMP/official/seforim.db" ] && OFFICIAL=(--official "$RUNNER_TEMP/official/seforim.db")
-          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}"             --out "$RUNNER_TEMP/work/raw.db"             --library-id "$OWNER-$REPO"             --source-name "$REPO"             --author "$OWNER"             --db-version "${GITHUB_RUN_NUMBER}"             --display-name "הספרייה של $OWNER"
+          STABLE=()
+          [ -n "${PREV_DB:-}" ] && STABLE=(--stable-from "$PREV_DB")
+          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}" "${STABLE[@]}"             --out "$RUNNER_TEMP/work/raw.db"             --library-id "$OWNER-$REPO"             --source-name "$REPO"             --author "$OWNER"             --db-version "${GITHUB_RUN_NUMBER}"             --display-name "הספרייה של $OWNER"
           python -X utf8 .github/scripts/compress_personal_db.py             "$RUNNER_TEMP/work/raw.db" "$RUNNER_TEMP/work/${REPO}.db"
           ls -l "$RUNNER_TEMP/work"
 
@@ -149,15 +177,18 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
           REPO: ${{ github.event.repository.name }}
+          PREV_DB: ${{ steps.prev.outputs.path }}
         run: |
           set -euo pipefail
           W="$RUNNER_TEMP/work"
           BASE="https://github.com/$GITHUB_REPOSITORY/releases/download"
+          DELTA=()
+          [ -n "${PREV_DB:-}" ] && DELTA=(--prev-dbs "$PREV_DB")
           python -X utf8 .github/scripts/release_db.py inject --db "$W/${REPO}.db"             --library-id "$OWNER-$REPO" --db-version "$GITHUB_RUN_NUMBER"             --manifest-url "$BASE/db/manifest.json" --key "$RUNNER_TEMP/signing.key"
-          python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$GITHUB_RUN_NUMBER"             --notes "עדכון אוטומטי, גרסה $GITHUB_RUN_NUMBER"
+          python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$GITHUB_RUN_NUMBER"             --notes "עדכון אוטומטי, גרסה $GITHUB_RUN_NUMBER" "${DELTA[@]}"
           python -X utf8 .github/scripts/release_db.py sign "$W/out/manifest.json" --key "$RUNNER_TEMP/signing.key"
           PUB=$(python -X utf8 -c 'import sys; sys.path.insert(0, ".github/scripts"); import release_db; print(release_db.public_key_of(sys.argv[1]))' "$RUNNER_TEMP/signing.key")
-          python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db"
+          python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db" "${DELTA[@]}"
           ls -l "$W/out"
 
       - name: Publish releases
