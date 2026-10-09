@@ -1,15 +1,20 @@
 name: Extract ZIP and Keep Empty Folders
 
-# התהליך ירוץ כשהקובץ הספציפי יעודכן, או כשתריץ ידנית
+# מחלץ כל קובץ ZIP שהועלה לשורש המאגר אל מבנה התיקיות, ומוחק אותו.
+# ה-ZIP אמור לשקף את מבנה התיקיות של המאגר (למשל: תלמוד בבלי/ברכות/ספר.txt).
+# ZIP שהורד מגיטהאב (תיקיית עטיפה בשם <מאגר>-main) מטופל אוטומטית. תיקיות אחרות נשמרות כמות שהן.
 on:
   push:
+    branches:
+      - main
     paths:
-      - 'A.zip' # <--- שנה לשם קובץ הזיפ שלך כאן
+      - '*.zip'
+      - '*.ZIP'
   workflow_dispatch:
 
-# אישור לבוט לכתוב ולדחוף שינויים חזרה למאגר
 permissions:
   contents: write
+  actions: write
 
 jobs:
   extract-and-commit:
@@ -19,27 +24,65 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Extract ZIP file
+      - name: Extract ZIP files
+        env:
+          REPO: ${{ github.event.repository.name }}
+        shell: python
         run: |
-          # מחלץ את הקובץ. המירכאות מונעות שגיאות אם יש רווחים בשם
-          unzip -o "A.zip" -d ./ # <--- שנה לשם קובץ הזיפ שלך כאן
-          
-          # מוחק את קובץ הזיפ המקורי כדי שלא יתפוס מקום מיותר במאגר
-          rm "A.zip" # <--- שנה לשם קובץ הזיפ שלך כאן
+          import glob, os, posixpath, shutil, zipfile
+
+          repo = os.environ["REPO"]
+
+          def fix_name(info):
+              # שמות בלי דגל UTF-8 מפוענחים כ-cp437; מנסים לשחזר UTF-8 (כך נשמרת עברית)
+              name = info.filename
+              if not info.flag_bits & 0x800:
+                  try:
+                      name = name.encode("cp437").decode("utf-8")
+                  except (UnicodeEncodeError, UnicodeDecodeError):
+                      pass
+              return name
+
+          zips = sorted(f for f in os.listdir(".") if f.lower().endswith(".zip") and os.path.isfile(f))
+          for z in zips:
+              print("מחלץ:", z)
+              with zipfile.ZipFile(z) as zf:
+                  items = []
+                  for info in zf.infolist():
+                      name = fix_name(info).replace("\\", "/")
+                      parts = [p for p in name.split("/") if p not in ("", ".")]
+                      # זבל של macOS/Windows, ונתיבים מסוכנים
+                      if not parts or ".." in parts or parts[0] == "__MACOSX" or parts[-1] in (".DS_Store", "Thumbs.db"):
+                          continue
+                      items.append((info, parts))
+                  # ZIP שהורד מגיטהאב עטוף בתיקייה <מאגר>-<ענף>; מסירים אותה. תיקיות אחרות הן קטגוריות לגיטימיות.
+                  tops = {p[0] for _, p in items}
+                  strip = len(tops) == 1 and next(iter(tops)).startswith(repo + "-")
+                  if strip:
+                      print("מסיר תיקיית עטיפה:", next(iter(tops)))
+                  for info, parts in items:
+                      if strip:
+                          parts = parts[1:]
+                          if not parts:
+                              continue
+                      dest = os.path.join(*parts)
+                      if info.is_dir():
+                          os.makedirs(dest, exist_ok=True)
+                      else:
+                          os.makedirs(os.path.dirname(dest) or ".", exist_ok=True)
+                          with zf.open(info) as src, open(dest, "wb") as out:
+                              shutil.copyfileobj(src, out)
+              os.remove(z)
 
       - name: Handle empty folders and push changes
         run: |
-          # הגדרת בוט גיטהאב בתור מי שעושה את הקומיט
           git config --global user.name "github-actions[bot]"
           git config --global user.email "github-actions[bot]@users.noreply.github.com"
-          
-          # סריקת כל התיקיות הריקות (חוץ מתיקיות המערכת של גיט) ויצירת קובץ נסתר בהן
+
+          # גיט לא שומר תיקיות ריקות: יוצרים בהן קובץ נסתר
           find . -type d -empty -not -path "./.git*" -exec touch {}/.gitkeep \;
-          
-          # הוספת כל הקבצים והתיקיות המחולצים (וכן הסרת הזיפ מהמעקב)
-          git add .
-          
-          # בדיקה אם יש שינויים, ואם כן - עשה Commit ו-Push
+
+          git add -A
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
