@@ -47,16 +47,16 @@ jobs:
       - name: Install dependencies
         run: pip install zstandard
 
-      # ה-DB הרשמי של אוצריא נדרש רק לקישורים (links.csv): הוא מתרגם "ספר + פרק" לשורה המדויקת בספרייה הרשמית.
-      # מורידים אותו בזמן הריצה רק אם יש במאגר קבצי links.csv, ושומרים ב-cache לפי גרסה.
+      # ה-DB הרשמי של אוצריא נדרש ליצירת קישורים: הוא מתרגם "ספר + פרק/דף" לשורה המדויקת בספרייה הרשמית.
+      # מורידים אותו בזמן הריצה (נשמר ב-cache לפי גרסה) כשיש במאגר ספרי TXT.
       - name: Check if the official DB is needed
         id: need-official
         run: |
-          if [ -n "$(find 'קבצי קישורים וסדר הדורות' -path '*קישורים*' -name links.csv 2>/dev/null | head -n 1)" ]; then
+          if [ -n "$(find . -mindepth 2 -not -path './.*' -iname '*.txt' ! -iname 'readme.txt' 2>/dev/null | head -n 1)" ]; then
             echo "needed=true" >> "$GITHUB_OUTPUT"
           else
             echo "needed=false" >> "$GITHUB_OUTPUT"
-            echo "אין links.csv במאגר: ה-DB הרשמי לא נדרש"
+            echo "אין ספרי TXT: ה-DB הרשמי לא נדרש"
           fi
 
       - name: Find latest official DB release
@@ -101,6 +101,12 @@ jobs:
           command -v zstd >/dev/null || sudo apt-get install -y zstd
           zstd -q -d --long=31 -f "$RUNNER_TEMP/official/$OFFICIAL_ASSET" -o "$RUNNER_TEMP/official/seforim.db"
           rm -f "$RUNNER_TEMP/official/$OFFICIAL_ASSET"
+
+      # יצירת קישורים אוטומטית (מנוע "מחולל הקישורים"): בבלי, ירושלמי, תנ"ך ועוד, לפי כותרות הספר.
+      # ספרים שיש להם כבר קישורים משלכם (links.csv) לא נוגעים בהם. הקישורים לא נשמרים במאגר, רק ב-DB.
+      - name: Generate links automatically
+        if: steps.need-official.outputs.needed == 'true'
+        run: python -X utf8 .github/scripts/auto_links.py . "$RUNNER_TEMP/official/seforim.db"
 
       - name: Build DB
         env:

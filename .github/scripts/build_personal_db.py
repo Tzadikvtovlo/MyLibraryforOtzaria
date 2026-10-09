@@ -193,6 +193,8 @@ def main():
                     help='קישור פירוש על הש"ס לשורת הגמרא לפי הד"ה המודגש (ברירת מחדל: פעיל; --no-dh-lines מכבה)')
     a = ap.parse_args()
     root = os.path.normpath(a.root)
+    global LINKS_DIR
+    LINKS_DIR = os.path.join(root, 'קבצי קישורים וסדר הדורות')
 
     base = os.path.join(root, a.folder)
     # רק קבצי TXT בתוך תיקיות (לא בשורש); בלי README, בלי תיקיות נסתרות (.git, .github)
