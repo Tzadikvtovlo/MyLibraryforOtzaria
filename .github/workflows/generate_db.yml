@@ -21,6 +21,10 @@ on:
 permissions:
   contents: write
 
+env:
+  OFFICIAL_REPO: Otzaria/SeforimLibrary
+  OFFICIAL_ASSET: seforim-schema6.db.zst
+
 # מונע ריצות מקבילות שיתנגשו זו בזו
 concurrency:
   group: generate-db
@@ -43,6 +47,61 @@ jobs:
       - name: Install dependencies
         run: pip install zstandard
 
+      # ה-DB הרשמי של אוצריא נדרש רק לקישורים (links.csv): הוא מתרגם "ספר + פרק" לשורה המדויקת בספרייה הרשמית.
+      # מורידים אותו בזמן הריצה רק אם יש במאגר קבצי links.csv, ושומרים ב-cache לפי גרסה.
+      - name: Check if the official DB is needed
+        id: need-official
+        run: |
+          if [ -n "$(find 'קבצי קישורים וסדר הדורות' -path '*קישורים*' -name links.csv 2>/dev/null | head -n 1)" ]; then
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "אין links.csv במאגר: ה-DB הרשמי לא נדרש"
+          fi
+
+      - name: Find latest official DB release
+        id: official
+        if: steps.need-official.outputs.needed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG=$(gh api "repos/$OFFICIAL_REPO/releases?per_page=100" --jq             "[.[] | select(.draft==false and .prerelease==false and (.tag_name|test(\"^v[0-9]+-\")) and any(.assets[]; .name==\"$OFFICIAL_ASSET\"))] | sort_by(.published_at) | last | .tag_name")
+          [ -n "$TAG" ] && [ "$TAG" != "null" ] || { echo "::error::לא נמצאה הוצאה רשמית עם $OFFICIAL_ASSET"; exit 1; }
+          echo "ה-DB הרשמי: $TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Restore official DB cache
+        id: official-cache
+        if: steps.need-official.outputs.needed == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/official/seforim-schema6.db.zst
+          key: official-db-${{ steps.official.outputs.tag }}
+
+      - name: Download official DB (cache miss)
+        if: steps.need-official.outputs.needed == 'true' && steps.official-cache.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/official"
+          gh release download "${{ steps.official.outputs.tag }}" -R "$OFFICIAL_REPO" -p "$OFFICIAL_ASSET" -D "$RUNNER_TEMP/official" --clobber
+
+      - name: Save official DB cache
+        if: steps.need-official.outputs.needed == 'true' && steps.official-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/official/seforim-schema6.db.zst
+          key: official-db-${{ steps.official.outputs.tag }}
+
+      - name: Decompress official DB
+        if: steps.need-official.outputs.needed == 'true'
+        run: |
+          set -euo pipefail
+          command -v zstd >/dev/null || sudo apt-get install -y zstd
+          zstd -q -d --long=31 -f "$RUNNER_TEMP/official/$OFFICIAL_ASSET" -o "$RUNNER_TEMP/official/seforim.db"
+          rm -f "$RUNNER_TEMP/official/$OFFICIAL_ASSET"
+
       - name: Build DB
         env:
           OWNER: ${{ github.repository_owner }}
@@ -51,7 +110,9 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/work"
           # קבצי TXT בלבד מתוך תיקיות; README וקבצי GS (וכל קובץ שאינו TXT) לא נכללים
-          python -X utf8 .github/scripts/build_personal_db.py . --root . \
+          OFFICIAL=()
+          [ -f "$RUNNER_TEMP/official/seforim.db" ] && OFFICIAL=(--official "$RUNNER_TEMP/official/seforim.db")
+          python -X utf8 .github/scripts/build_personal_db.py . --root .             "${OFFICIAL[@]}" \
             --out "$RUNNER_TEMP/work/raw.db" \
             --library-id "$OWNER-$REPO" \
             --source-name "$REPO" \
