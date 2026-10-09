@@ -188,7 +188,7 @@ jobs:
           python -X utf8 .github/scripts/release_db.py pack --db "$W/${REPO}.db" --out "$W/out"             --url-prefix "$BASE/db-v$GITHUB_RUN_NUMBER"             --notes "עדכון אוטומטי, גרסה $GITHUB_RUN_NUMBER" "${DELTA[@]}"
           python -X utf8 .github/scripts/release_db.py sign "$W/out/manifest.json" --key "$RUNNER_TEMP/signing.key"
           PUB=$(python -X utf8 -c 'import sys; sys.path.insert(0, ".github/scripts"); import release_db; print(release_db.public_key_of(sys.argv[1]))' "$RUNNER_TEMP/signing.key")
-          python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db"
+          python -X utf8 .github/scripts/release_db.py verify "$W/out/manifest.json" --public-key "$PUB" --parts "$W/out" --db "$W/${REPO}.db" "${DELTA[@]}"
           ls -l "$W/out"
 
       - name: Publish releases
