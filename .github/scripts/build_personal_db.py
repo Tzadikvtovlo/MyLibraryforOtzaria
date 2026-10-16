@@ -28,6 +28,20 @@ LIBRARY_ID = 'otzarya-unofficial-books'
 ROW_STRIDE = 1 << 20  # שורות/רשומות תוכן-עניינים לספר: מזהה = bookId*ROW_STRIDE + מונה, בלי תלות בספרים אחרים
 
 
+_DBL = str.maketrans({'“': '"', '”': '"', '„': '"', '״': '"'})
+_SGL = str.maketrans({'‘': "'", '’': "'", '׳': "'"})
+
+
+def db_book_title(t):
+    """שם ספר במסד: גרשיים וגרש רגילים (" ו-') כמו בספרייה הרשמית, כך ששו״ת ושו"ת הם אותו שם."""
+    return t.translate(_DBL).translate(_SGL)
+
+
+def db_category_title(t):
+    """שם קטגוריה במסד: בספרייה הרשמית כתוב ״ (למשל תנ״ך), וגרש רגיל."""
+    return t.translate(_DBL).replace('"', '״').translate(_SGL)
+
+
 class Ids:
     """מקצה מזהים יציבים: מפתח שכבר היה ב-DB הקודם (--stable-from) שומר id, חדשים מקבלים max+1."""
 
@@ -242,11 +256,12 @@ def main():
     def cat_id(parts):
         parent = None
         for i in range(len(parts)):
-            k = tuple(parts[:i + 1])
+            # המפתח מנורמל: תיקיות שנבדלות רק בצורת הגרשיים הן קטגוריה אחת
+            k = tuple(db_category_title(x) for x in parts[:i + 1])
             if k not in cats:
-                cats[k] = cat_ids.get(k)
+                cats[k] = cat_ids.get(tuple(parts[:i + 1]))
                 db.execute('INSERT INTO category(id,parentId,title,level,orderIndex) VALUES (?,?,?,?,?)',
-                           (cats[k], parent, parts[i], i, len(cats)))
+                           (cats[k], parent, db_category_title(parts[i]), i, len(cats)))
             parent = cats[k]
         return parent
 
@@ -257,6 +272,7 @@ def main():
         return d[name]
 
     book_ids, stats, toc_written = {}, defaultdict(int), set()
+    db_titles = set()
     for order, path in enumerate(files, 1):
         title = os.path.splitext(os.path.basename(path))[0]
         rel = os.path.relpath(os.path.dirname(path), root).split(os.sep)
@@ -265,9 +281,13 @@ def main():
         if len(lines) >= ROW_STRIDE:
             raise SystemExit(f'ספר ארוך מדי למזהים יציבים: {title}')
         bid = book_id_alloc.get(title)
+        db_title = db_book_title(title)
+        if db_title in db_titles:
+            print(f'אזהרה: יש כמה ספרים בשם "{db_title}" (הבדל רק בגרשיים)')
+        db_titles.add(db_title)
         db.execute(
             'INSERT INTO book(id,categoryId,sourceId,title,orderIndex,totalLines) VALUES (?,?,?,?,?,?)',
-            (bid, cid, 1, title, order, len(lines)))
+            (bid, cid, 1, db_title, order, len(lines)))
         book_ids[title] = bid
         d = dorot.get(title)
         if d:
@@ -423,7 +443,7 @@ def main():
                 continue
             json_seen.add(key)
             db.execute('INSERT INTO external_link VALUES (?,?,?,?,?,?,?)',
-                       (book_ids[src], sl, a.library_id, tgt, None, tl, kind))
+                       (book_ids[src], sl, a.library_id, db_book_title(tgt), None, tl, kind))
             stats['json_links'] += 1
     db.execute('UPDATE book SET hasSourceConnection=1 WHERE id IN (SELECT DISTINCT sourceBookId FROM external_link)')
     db.commit()
